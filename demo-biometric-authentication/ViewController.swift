@@ -11,18 +11,23 @@ import LocalAuthentication
 
 class ViewController: UIViewController {
 
+    // MARK: - Life cycle
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Do any additional setup after loading the view.
     }
 
+    // MARK: - IBActions
+
     @IBAction func onDeviceOwnerAuthenticationWithBiometrics(_ sender: UIButton) {
-        autheticate { isSccess, error in
+        autheticate(feedback: .main) { isSuccess, error in
             if let error = error {
-                DispatchQueue.main.async {
-                    self.showAlert(title: "失敗", message: error.localizedDescription)
-                }
+                self.showAlert(title: "error", message: error.localizedDescription)
+            } else if isSuccess {
+                self.showAlert(title: "success", message: "認証に成功しました。")
             }
+
         }
     }
 
@@ -36,26 +41,29 @@ class ViewController: UIViewController {
         }
     }
 
-    /// The Authenticattion using a biometric method (Touch ID or Face ID).
-    func autheticate(_ completion: ((Bool, Error?) -> Void)? = nil) {
-        let context: LAContext = {
+}
+
+private extension ViewController {
+
+    // MARK: - Private mathods
+
+    static func createLAContext() -> LAContext {
+        {
             let context = LAContext()
             context.localizedCancelTitle = "キャンセル"
             context.localizedFallbackTitle = "パスコード入力"
             return context
         }()
+    }
+
+    /// The Authenticattion using a biometric method (Touch ID or Face ID).
+    func autheticate(feedback queue: DispatchQueue = .main, _ completion: ((Bool, Error?) -> Void)? = nil) {
+        let context = ViewController.createLAContext()
         var error: NSError?
         let reason = "Local Authentication"
         if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
-
-            if shouldHandle(error) {
-                showAlert(title: "失敗", message: error?.localizedDescription ?? "エラーが発生しました。")
-                return
-            }
-
-            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { isGranted, error in
+            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { [weak self] isGranted, e in
                 if isGranted {
-                    print("success")
                     if #available(iOS 11.0, *) {
                         switch context.biometryType {
                         case .faceID:
@@ -70,67 +78,66 @@ class ViewController: UIViewController {
                     } else {
                         // Fallback on earlier versions
                     }
-                    completion?(true, nil)
+                    queue.async {
+                        completion?(true, nil)
+                    }
                 } else {
                     // Fallback on earlier versions
                     if let error = error as? LAError {
+                        self?.logError(error)
                         switch error.code {
                         case .userFallback:
-                            self.passcode { isSuccess, error in
+                            self?.passcode { [weak self] isSuccess, e in
+                                self?.logError(e)
                                 if isSuccess {
-                                    print("success")
-                                    completion?(true, nil)
+                                    queue.async {
+                                        completion?(true, nil)
+                                    }
                                 } else {
-                                    print("failure: \(error?.localizedDescription ?? "")")
-                                    completion?(false, error)
-
+                                    queue.async {
+                                        completion?(false, error)
+                                    }
                                 }
                             }
-                            
                         default:
                             break
                         }
                     } else {
                         // Unknown
-                        print("failure")
-                        completion?(false, error)
+                        self?.logError(e)
+                        queue.async {
+                            completion?(false, error)
+                        }
                     }
                 }
             }
         } else {
             // A fingerprint enrolled with Touch ID or a face set up with Face ID
             // are not satisfied with certain requirements
-            let description = error?.localizedDescription ?? ""
-            print(description)
-            completion?(false, error)
+            logError(error)
+            queue.async {
+                completion?(false, error)
+            }
         }
     }
 
     /// The Authenticatation by biometry or device passcode.
     func passcode(_ completion: ((Bool, Error?) -> Void)? = nil) {
-        let context: LAContext = {
-            let context = LAContext()
-            context.localizedCancelTitle = "キャンセル"
-            context.localizedFallbackTitle = "パスコード入力"
-            return context
-        }()
+        let context = ViewController.createLAContext()
         var error: NSError?
         if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) {
-            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "パスコード入力") { isSuccess, _ in
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "パスコード入力") { isSuccess, e in
+                self.logError(e)
                 if isSuccess {
-                    print("success")
                     completion?(true, nil)
                 } else {
-                    print("failure")
                     completion?(false, error)
                 }
             }
         } else {
             // A fingerprint enrolled with Touch ID or a face set up with Face ID
             // are not satisfied with certain requirements
-            let description = error?.localizedDescription ?? ""
-
-            print(description)
+            logError(error)
             completion?(false, error)
         }
     }
@@ -142,6 +149,8 @@ class ViewController: UIViewController {
         }))
         present(alert, animated: true)
     }
+
+    // MARK: - To handle/display Local Authentication Error
 
     func shouldHandle(_ error: NSError?) -> Bool {
         if let error = error as? LAError {
@@ -162,6 +171,39 @@ class ViewController: UIViewController {
     }
 
 
+    func logError(_ error: Error?) {
+        logError(error as NSError?)
+    }
+
+    func logError(_ error: NSError?) {
+        if error == .none {
+            print("認証に成功しました。")
+            return
+        }
+        if let error = error as? LAError {
+            switch error.code {
+            case .authenticationFailed:
+                print("認証が失敗しました。 >> because user failed to provide valid credentials.")
+            case .userCancel:
+                print("「キャンセル」ボタンが押されました。")
+            case .userFallback:
+                print("「フォールバック (パスワードを入力)」ボタンが押されました。")
+            case .systemCancel:
+                print("システムによってキャンセルされました。")
+            case .passcodeNotSet:
+                print("パスコードが未設定です。")
+            case .biometryNotEnrolled:
+                print("生体情報が未登録です。")
+            case .biometryNotAvailable:
+                print("生体センサーが無効です。")
+            case .biometryLockout:
+                print("現在、生体センサーがロックアウト状態です。")
+            default:
+                print("その他: \(error.self)")
+            }
+            print(error.localizedDescription)
+        }
+    }
 
 }
 
